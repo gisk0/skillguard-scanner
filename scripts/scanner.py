@@ -281,6 +281,8 @@ def _parse_declared_env_vars(skill_path: Path) -> Set[str]:
             current_indent = len(line) - len(line.lstrip())
             if stripped.startswith("- ") and current_indent >= indent_threshold:
                 var = stripped[2:].strip().strip('"').strip("'").strip('`')
+                # Strip annotations like (optional), (required), etc.
+                var = re.sub(r'\s*\(.*?\)\s*$', '', var).strip()
                 if re.match(r'^[A-Z][A-Z0-9_]{2,}$', var):
                     env_vars.add(var)
             elif stripped and not stripped.startswith("#") and current_indent < indent_threshold:
