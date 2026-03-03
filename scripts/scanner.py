@@ -238,6 +238,10 @@ def _is_user_agent_ip(line: str) -> bool:
 def _is_credential_in_audit(filepath: Path) -> bool:
     return filepath.name == "security-audit.sh"
 
+def _is_setup_script(filepath: Path) -> bool:
+    """Whitelist interactive setup scripts that collect credentials."""
+    return filepath.name in {"setup.sh", "install.sh", "configure.sh"}
+
 
 def _parse_declared_env_vars(skill_path: Path) -> Set[str]:
     """Parse declared env vars from SKILL.md frontmatter.
@@ -246,7 +250,10 @@ def _parse_declared_env_vars(skill_path: Path) -> Set[str]:
       openclaw.install.env: [VAR1, VAR2]   (structured)
       requires.env: [VAR1, VAR2]           (legacy)
     """
+    # Check both root and skill/ subdirectory
     skill_md = skill_path / "SKILL.md"
+    if not skill_md.exists():
+        skill_md = skill_path / "skill" / "SKILL.md"
     if not skill_md.exists():
         return set()
     try:
@@ -359,11 +366,14 @@ def _scan_file(filepath: Path, rel_path: str, declared_envs: Optional[Set[str]] 
             if not PRIVATE_IPS.match(ip):
                 findings.append(Finding("hardcoded_ip", SEVERITY_MEDIUM, rel_path, i,
                                  line.strip()[:120], f"Hardcoded public IP: {ip}"))
-        # Credential access (medium) – whitelist for audit script and declared env vars
+        # Credential access (medium) – whitelist for audit script, setup scripts, and declared env vars
         if CREDENTIAL_ACCESS.search(line):
             if _is_credential_in_audit(filepath):
                 findings.append(Finding("credential_access", SEVERITY_INFO, rel_path, i,
                                  line.strip()[:120], "Credential access in audit script (legitimate)"))
+            elif _is_setup_script(filepath):
+                findings.append(Finding("credential_access", SEVERITY_INFO, rel_path, i,
+                                 line.strip()[:120], "Credential collection in setup script (interactive)"))
             elif declared_envs:
                 findings.append(Finding("credential_access", SEVERITY_INFO, rel_path, i,
                                  line.strip()[:120],
