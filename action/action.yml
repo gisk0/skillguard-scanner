@@ -1,0 +1,91 @@
+name: SkillGuard Security Scan
+description: Scan OpenClaw skills for security issues. Fails on HIGH/CRITICAL findings or aggregate risk.
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  skill-dir:
+    description: Path to the skill directory (containing SKILL.md)
+    required: false
+    default: skill
+  fp-whitelist:
+    description: >
+      Comma-separated list of check:max_severity pairs to whitelist as known false positives.
+      Example: "credential_access:MEDIUM,hardcoded_ip:LOW"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Run SkillGuard scan
+      shell: bash
+      run: |
+        mkdir -p /tmp/skillguard
+        python3 "${{ github.action_path }}/../scripts/scanner.py" \
+          --skills-dir "${{ github.workspace }}" \
+          --skill "${{ inputs.skill-dir }}" \
+          --json-out /tmp/skillguard/results.json 2>&1 || true
+
+    - name: Evaluate results
+      shell: bash
+      env:
+        FP_WHITELIST: ${{ inputs.fp-whitelist }}
+      run: |
+        python3 - <<'PYEOF'
+        import json, os, sys
+
+        with open("/tmp/skillguard/results.json") as f:
+            data = json.load(f)
+
+        # Parse whitelist from input: "credential_access:MEDIUM,hardcoded_ip:LOW"
+        fp_whitelist = {}
+        raw = os.environ.get("FP_WHITELIST", "").strip()
+        if raw:
+            for entry in raw.split(","):
+                entry = entry.strip()
+                if ":" in entry:
+                    check, sev = entry.rsplit(":", 1)
+                    fp_whitelist[check.strip()] = sev.strip().upper()
+
+        blockers = []
+        whitelisted = 0
+        for report in data.get("reports", []):
+            for finding in report.get("findings", []):
+                severity = finding.get("severity", "").upper()
+                check = finding.get("check", "")
+                desc = f"[{severity}] {check}: {finding.get('file', '?')}:{finding.get('line', '?')} — {finding.get('detail', '')}"
+
+                # Skip LOW/INFO
+                if severity in ("LOW", "INFO", ""):
+                    continue
+
+                if severity in ("HIGH", "CRITICAL"):
+                    blockers.append(desc)
+                elif severity == "MEDIUM":
+                    if check in fp_whitelist and fp_whitelist[check] in ("MEDIUM", "HIGH", "CRITICAL"):
+                        whitelisted += 1
+                    else:
+                        blockers.append(desc)
+
+            # Check aggregate risk level
+            risk = report.get("risk_level", "").upper()
+            if risk in ("HIGH", "CRITICAL"):
+                blockers.append(f"[{risk}] Aggregate risk score: {report.get('risk_score', '?')} for '{report.get('name', '?')}'")
+
+        if whitelisted:
+            print(f"ℹ️  {whitelisted} whitelisted finding(s)")
+
+        if blockers:
+            print(f"\n❌ SkillGuard: {len(blockers)} blocking issue(s):")
+            for b in blockers:
+                print(f"  {b}")
+            sys.exit(1)
+        else:
+            print("✅ SkillGuard passed — no blocking findings")
+        PYEOF
